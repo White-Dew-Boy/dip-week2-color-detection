@@ -99,7 +99,7 @@ def build_visuals(image, det: dict) -> dict:
         "detected": overlay,
         "compare": vis.tile_images(
             [image, mask_bgr, det["result"], overlay],
-            titles=["original", f"{name} mask", f"{name} masked", f"{name} detected"]),
+            titles=["original", f"{name} 掩图", f"{name} 结果图片", f"{name} detected"]),
     }
 
 
