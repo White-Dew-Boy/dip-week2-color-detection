@@ -85,21 +85,23 @@ def env_str(name: str, default: str) -> str:
 # 结果图片的组装与保存
 # ============================================================
 def build_visuals(image, det: dict) -> dict:
-    """把识别结果整理成待保存 / 待显示的各张图。"""
+    """把识别结果整理成待保存 / 待显示的各张图。
+
+    mask 用原始二值掩膜（黑底白块），result 是只保留目标颜色的原图，
+    与 example/main.py 里的 mask / res 两张图一致。
+    """
     name = det["color"].name
     spec = det["color"]
     overlay = vis.draw_regions(image, det["regions"], bgr=spec.bgr, prefix=f"{name} ")
-    mask_bgr = vis.colorize_mask(det["mask"], spec)
 
     return {
         "name": name,
         "mask": det["mask"],
-        "mask_bgr": mask_bgr,
         "result": det["result"],
         "detected": overlay,
         "compare": vis.tile_images(
-            [image, mask_bgr, det["result"], overlay],
-            titles=["original", f"{name} 掩图", f"{name} 结果图片", f"{name} detected"]),
+            [image, det["mask"], det["result"], overlay],
+            titles=["original", f"{name} mask", f"{name} res", f"{name} detected"]),
     }
 
 

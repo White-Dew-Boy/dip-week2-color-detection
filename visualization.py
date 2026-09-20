@@ -8,8 +8,6 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from color_specs import ColorSpec
-
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 
@@ -45,15 +43,11 @@ def draw_regions(image: np.ndarray, regions, bgr=WHITE, prefix: str = "") -> np.
     return canvas
 
 
-def colorize_mask(mask: np.ndarray, color: ColorSpec) -> np.ndarray:
-    """把二值掩膜染成该颜色的实色图（便于和原图并排对比）。"""
-    canvas = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
-    canvas[mask > 0] = color.bgr
-    return canvas
-
-
 def to_bgr(image: np.ndarray) -> np.ndarray:
-    """灰度图补成三通道，否则 hconcat 会因为类型不一致直接报错。"""
+    """灰度图补成三通道，否则 hconcat 会因为类型不一致直接报错。
+
+    二值掩膜（单通道 0/255）经过这里时会原样补成三通道，显示为黑底白块。
+    """
     return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image
 
 
