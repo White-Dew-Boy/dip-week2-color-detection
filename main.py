@@ -21,7 +21,8 @@
     python main.py --largest                # 只保留最大色块（识别单个目标时更干净）
     python main.py --mode tune --color yellow   # 微调阈值，按 s 保存（仅图片模式）
 
-图片模式：结果窗口按任意键关闭（图片过大时自动缩小显示，不影响识别结果）。
+图片模式：只弹出一张 4 联拼接图（original | mask | masked | detected），
+          **按原始分辨率显示**，按任意键关闭。
 摄像头模式：输入源换成摄像头，识别流程与图片模式完全相同；
           窗口按 q / ESC 退出，按 s 把当前帧和识别结果存图，Ctrl+C 也能结束。
 
@@ -29,7 +30,8 @@
     IMG_PATH             默认读哪张图
     DEFAULT_COLOR        默认识别的颜色，默认 yellow（可写 blue / green / red）
     MAX_LISTED_REGIONS   统计信息里最多列出几个区域，默认 5
-    DISPLAY_MAX_WIDTH    显示时窗口最大宽度（px），默认 1600，超了就缩小
+    DISPLAY_MAX_WIDTH    显示窗口最大宽度（px）。默认 0 = 不限制，拼接图按原始
+                         分辨率显示、画质不变；设成 1600 之类的正数则会缩小
 命令行参数（--color 等）会覆盖这里的默认值。
 """
 
@@ -112,23 +114,18 @@ def save_visuals(save_dir: str, image_path: str, visuals: dict) -> None:
     print(f"结果已保存到  : {os.path.join(save_dir, stem)}_*.png")
 
 
-def show_visuals(image, det: dict, visuals: dict, max_width: int) -> None:
-    """弹窗显示结果。
+def show_visuals(visuals: dict, max_width: int | None) -> None:
+    """弹窗显示结果：只显示一张 4 联拼接图（原图 | 掩膜 | 结果 | 标注）。
 
-    退出方式：先点一下任意结果窗口（让焦点在 OpenCV 窗口上，而不是终端），
-    再按 任意键 / q / ESC 关闭全部窗口。标题里只留一个短后缀 " (any key)" 作为提醒，
-    详细说明打印在控制台。
+    默认 max_width 为 None，即按**原始分辨率**显示，画质不损失
+    （DISPLAY_MAX_WIDTH 设为正数时才缩小，0 或不设表示不限制）。
+    退出方式：先点一下窗口（让焦点在 OpenCV 窗口上，而不是终端），再按任意键关闭。
     """
     hint = " (any key to quit)"
     cv2.imshow(f"compare{hint}", vis.fit_for_display(visuals["compare"], max_width))
-    name = visuals["name"]
-    cv2.imshow(f"image{hint}", vis.fit_for_display(image, max_width))
-    cv2.imshow(f"mask{hint}", vis.fit_for_display(visuals["mask"], max_width))
-    cv2.imshow(f"res{hint}", vis.fit_for_display(visuals["result"], max_width))
-    cv2.imshow(f"detected ({name}){hint}",
-               vis.fit_for_display(visuals["detected"], max_width))
 
-    print("聚焦到窗口后按任意键退出")
+    print("已弹出 4 联拼接图（original | mask | masked | detected）："
+          "点一下窗口后按任意键退出。")
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
@@ -284,7 +281,10 @@ def main(argv=None) -> int:
         sys.exit(f"错误：{error}")
 
     max_regions = env_int(ENV_MAX_LISTED_REGIONS, 5)
-    max_width = env_int(ENV_DISPLAY_MAX_WIDTH, 1600)
+    # 拼接图默认按原始分辨率显示（画质不变）；DISPLAY_MAX_WIDTH 设为正数才限制宽度
+    compare_max_width = env_int(ENV_DISPLAY_MAX_WIDTH, 0)
+    # 摄像头每帧都缩放，成本较高，仍用固定上限
+    max_width = env_int(ENV_DISPLAY_MAX_WIDTH, 1600) or 1600
 
     # ---------- 摄像头模式：给了 --camera 就走这里 ----------
     if args.camera is not None:
@@ -324,9 +324,9 @@ def main(argv=None) -> int:
     visuals = build_visuals(image, det)
     if args.save:
         save_visuals(args.save, image_path, visuals)
-    # 默认显示结果图片；只有显式加 --no-show 才跳过
+    # 默认显示拼接图（原分辨率）；只有显式加 --no-show 才跳过
     if not args.no_show:
-        show_visuals(image, det, visuals, max_width=max_width)
+        show_visuals(visuals, max_width=compare_max_width)
     return 0
 
 

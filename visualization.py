@@ -85,9 +85,12 @@ def tile_images(tiles, titles=None, gap: int = 4, background=WHITE) -> np.ndarra
     return cv2.hconcat(parts[:-1])
 
 
-def fit_for_display(image: np.ndarray, max_width: int = 1600) -> np.ndarray:
-    """图片太宽时等比缩小，避免窗口超出屏幕（只影响显示，与识别 / 保存无关）。"""
-    if image.shape[1] <= max_width:
+def fit_for_display(image: np.ndarray, max_width: int | None = 1600) -> np.ndarray:
+    """图片太宽时等比缩小，避免窗口超出屏幕（只影响显示，与识别 / 保存无关）。
+
+    max_width 传 None 或 0 表示不限制，按原始分辨率显示（画质不变）。
+    """
+    if not max_width or image.shape[1] <= max_width:
         return image
     scale = max_width / image.shape[1]
     return cv2.resize(image, (max_width, max(1, int(image.shape[0] * scale))),

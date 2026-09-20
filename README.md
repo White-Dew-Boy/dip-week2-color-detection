@@ -40,7 +40,12 @@ python main.py                          # 无参数启动：识别黄色并弹�
 | `IMG_PATH` | `assets/cap.png` | 默认读哪张图（相对项目根目录）。**后缀可省略**，见下方说明 |
 | `DEFAULT_COLOR` | `yellow` | 默认识别的颜色，可写 `blue` / `yellow` / `green` / `red`（一次只识别一种） |
 | `MAX_LISTED_REGIONS` | `5` | 统计信息里最多列出几个区域，超出只显示数量 |
-| `DISPLAY_MAX_WIDTH` | `1600` | 显示窗口的最大宽度（px），图片更宽时等比缩小；识别与保存不受影响 |
+| `DISPLAY_MAX_WIDTH` | `0`（不限制） | 显示窗口的最大宽度（px）。`0` = 按**原始分辨率**显示，画质不变；设成正数（如 `1600`）则自动缩小 |
+
+> 图片模式只弹出**一张 4 联拼接图**（original | mask | masked | detected），
+> 默认按原始分辨率显示，**画质与保存的 PNG 完全一致**。
+> 拼接图总宽 ≈ 单格宽 × 4，所以大图（如 910px 宽的 `night.jpg`）窗口会达到 2744px；
+> 若超出屏幕，把 `DISPLAY_MAX_WIDTH` 设成 `1600` 让它自动缩小（代价是画质下降）。
 
 例：想让默认识别蓝色、并只看前 3 个区域，把 `.env` 改成
 
@@ -77,7 +82,7 @@ IMG_PATH = "assets/cap.jpg"   # 后缀写错也能找到 assets/cap.png
 
 | 命令 | 作用 |
 | --- | --- |
-| `python main.py` | 从图片识别默认颜色，弹窗显示结果（按任意键关闭） |
+| `python main.py` | 从图片识别默认颜色，弹出 4 联拼接图（原分辨率，按任意键关闭） |
 | `python main.py --camera` | **改用 0 号摄像头实时识别**（`q`/`ESC` 退出，`s` 存当前帧） |
 | `python main.py --camera 1` | 用 1 号摄像头 |
 | `python main.py --camera --save out/` | 摄像头模式下按 `s` 把帧和结果存到 `out/` |
