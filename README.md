@@ -14,8 +14,6 @@ color_detection.py   识别主流程：掩膜 + 区域列表 + 统计信息
 visualization.py     画轮廓标注、彩色掩膜、横向对比拼图
 tuning_app.py        可选的滑块微调窗口（按 s 保存阈值）
 sv_scan.py           指定 H，扫描 S×V 平面看哪些 (S,V) 能检测到
-bgr_histogram.py     BGR 三通道直方图
-hs_histogram.py      H-S 二维直方图（标出目标颜色的 H 区间）
 assets/              测试图片
 materials/           实验课 Assignment
 ```
@@ -119,13 +117,6 @@ python main.py --camera --save out/           # 按 s 时把帧和识别结果�
 等自动曝光稳定；打不开摄像头会提示检查占用或换设备号；`--camera` 与 `--mode tune`
 不能同时用（微调需要一张静态图片）。
 
-
-直方图脚本同样支持指定图片，`hs_histogram.py` 还能指定要标注的颜色：
-
-```bash
-python bgr_histogram.py
-python hs_histogram.py assets/yuanshen.png blue
-```
 
 ## 查看"当前能识别哪些颜色"
 
