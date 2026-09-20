@@ -1,0 +1,26 @@
+# ---- Python 虚拟环境 ----
+.venv/
+venv/
+env/
+
+# ---- Python 缓存 ----
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---- 运行产物（保存的结果图）----
+out/
+out_*/
+
+# ---- 临时调试脚本 / 结果 ----
+_*.py
+_*.png
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# ---- 调阈值时生成的阈值 JSON（临时产物）----
+*_bounds.json

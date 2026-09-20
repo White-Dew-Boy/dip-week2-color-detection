@@ -1,0 +1,9 @@
+# 统一使用 LF 换行，避免 Windows 下 git 反复提示 CRLF 转换
+* text=auto eol=lf
+
+# 图片等二进制文件不做任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.bmp binary
+*.webp binary
