@@ -1,19 +1,26 @@
 """S-V 检测扫描图：指定一个色相 H，扫描 S × V 平面，看哪些 (S, V) 能被检测到。
 
 用法：
-    python sv_scan.py --hue 28                  # H=28（黄色区）扫 S×V
+    python sv_scan.py --hue 28                  # H=28（黄色区）：实际能扫到的 S-V 色卡
     python sv_scan.py --hue 110                 # H=110（蓝色区）
-    python sv_scan.py --hue 28 --save out/      # 存成 PNG（out/sv_scan_h28.png）
+    python sv_scan.py --hue 0                   # H=0（红色，色相跨 0 环绕）
+    python sv_scan.py --hue 28 --no-optimize    # 只看固定阈值的理论范围
+    python sv_scan.py --hue 28 --compare        # 理论 vs 实际，并排两张
+    python sv_scan.py --hue 28 --save out/      # 存成 PNG
     python sv_scan.py --hue 28 --no-show        # 只打印统计 / 存图，不弹窗
 
 输出内容：
-    一张 S-V 色卡（横轴 Saturation 0~255，纵轴 V 255~0），
-    显示每个 (S, V) 组合在该 H 下的**真实颜色**，检测不到的格子留黑；
-    右侧图例列出每种已注册颜色能检测到的占比。
+    一张 S-V 色卡（横轴 Saturation 0~255，纵轴 V 255~0），只显示**实际能检测到**
+    的格子的真实颜色，检测不到的留黑；右侧图例给出每种颜色优化前后的占比。
 
-判定与识别逻辑完全一致：直接复用 mask_postprocess.threshold_hsv()，
-所以图上显示"能检测到"的格子，程序在图上就一定能识别到。
-注意 H 轴在 OpenCV 里是 0~179；红色跨 H=0 环绕，它的两段区间都会被正确判定。
+"实际"= 把 S-V 扫描图当成普通图片，走一遍与 main.py 完全相同的识别流程：
+    中值滤波 -> 固定阈值 -> 自适应阈值细化 -> 形态学开/闭运算 -> 区域过滤
+其中影响最大的是**自适应阈值细化**：它会按粗筛像素的 S 中位数把范围收紧，
+所以实际色卡会比"固定阈值"的理论色卡小一圈。用 --no-optimize 可切回理论色卡。
+
+判定与识别共用同一套代码（color_detection.detect_color），所以色卡上显示
+"能检测到"的格子，程序在该颜色下就一定能识别到。红色因色相跨 0 环绕、区间分两段，
+不做自适应细化，因此它的理论值与实际值一致。
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ import cv2
 import numpy as np
 
 import visualization as vis
+from color_detection import detect_color
 from color_specs import COLORS, HUE_MAX, SAT_MAX, VAL_MAX, HUE_MIN, get_color
 from mask_postprocess import threshold_hsv
 
@@ -54,11 +62,31 @@ def build_hsv_grid(h: int) -> np.ndarray:
 
 
 def scan(h: int):
-    """在固定 H 的 S-V 平面上扫描所有已注册颜色，返回 (真实色域, 掩膜字典)。"""
+    """在固定 H 的 S-V 平面上扫描所有已注册颜色，返回 (真实色域, 粗筛掩膜字典)。
+
+    粗筛掩膜 = 只用固定阈值的理论范围，供 --no-optimize / --compare 使用。
+    """
     hsv = build_hsv_grid(h)
     raw = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
     masks = {name: threshold_hsv(hsv, spec) > 0 for name, spec in COLORS.items()}
     return raw, masks
+
+
+def scan_optimized(raw: np.ndarray) -> dict[str, dict]:
+    """把 S-V 扫描图当成普通图片，交给识别主流程跑一遍。
+
+    用的是与 main.py 完全相同的优化流程（medianBlur -> 固定阈值 -> 自适应细化
+    -> 形态学 -> 区域过滤），所以得到的才是"实际能扫到"的范围。
+    """
+    return {name: detect_color(raw, name) for name in COLORS}
+
+
+def build_card(raw: np.ndarray, masks: dict[str, np.ndarray]) -> np.ndarray:
+    """色卡：能检测到的格子显示该 (S,V) 的真实颜色，检测不到的留黑。"""
+    claimed = np.zeros(raw.shape[:2], dtype=bool)
+    for hit in masks.values():
+        claimed |= hit
+    return np.where(claimed[..., None], raw, BLANK_COLOR).astype(np.uint8)
 
 
 # ============================================================
@@ -113,69 +141,92 @@ def make_panel(image: np.ndarray, title: str) -> np.ndarray:
     return canvas
 
 
-def draw_legend(panel: np.ndarray, left: int, top: int, masks: dict, h: int) -> None:
-    """右侧列出每种颜色在该 H 下的可检测占比。"""
+def draw_legend(panel: np.ndarray, left: int, top: int, cards: dict, h: int,
+                optimized: bool = True) -> None:
+    """右侧图例：每种颜色在该 H 下的可检测占比（优化模式下同时给出理论占比）。"""
     total = (SAT_MAX + 1) * (VAL_MAX + 1)
     y = top + 26
     for name, spec in COLORS.items():
-        hits = int(np.count_nonzero(masks[name]))
+        actual = int(cards[name]["actual"].sum())
+        theory = int(cards[name]["theory"].sum())
         x = left + 14
         cv2.rectangle(panel, (x, y - 13), (x + 18, y + 5), spec.bgr, -1)
         vis.draw_label(panel, name, (x + 26, y), (255, 255, 255), 0.5)
-        vis.draw_label(panel, f"{hits * 100.0 / total:.2f}% of S-V plane",
-                       (x + 26, y + 21), (165, 165, 165), 0.42)
+
+        if optimized:
+            vis.draw_label(panel, f"actual {actual * 100.0 / total:.2f}% of S-V plane",
+                           (x + 26, y + 21), (255, 255, 255), 0.42)
+            if actual != theory:
+                vis.draw_label(panel, f"was {theory * 100.0 / total:.2f}% before optimize",
+                               (x + 26, y + 40), (165, 165, 165), 0.42)
+            else:
+                vis.draw_label(panel, "(no change: not optimizable)",
+                               (x + 26, y + 40), (165, 165, 165), 0.42)
+        else:
+            vis.draw_label(panel, f"threshold only, {actual * 100.0 / total:.2f}%",
+                           (x + 26, y + 21), (255, 255, 255), 0.42)
+
         in_range = any(lo <= h <= hi for lo, hi in spec.ranges)
         note = f"H={h} in {spec.ranges[0][0]}~{spec.ranges[-1][1]}" if in_range \
             else f"H={h} outside this color"
-        vis.draw_label(panel, note, (x + 26, y + 40),
+        vis.draw_label(panel, note, (x + 26, y + 59),
                        spec.bgr if in_range else (150, 150, 150), 0.4)
-        y += 68
+        y += 88
 
     x = left + 14
     cv2.rectangle(panel, (x, y - 13), (x + 18, y + 5), BLANK_COLOR, -1)
     cv2.rectangle(panel, (x, y - 13), (x + 18, y + 5), (120, 120, 120), 1)
-    vis.draw_label(panel, "not shown (blank)", (x + 26, y), (255, 255, 255), 0.5)
-    claimed = np.zeros(next(iter(masks.values())).shape, dtype=bool)
-    for hit in masks.values():
-        claimed |= hit
-    vis.draw_label(panel, f"{100 - 100.0 * int(np.count_nonzero(claimed)) / total:.2f}% of S-V plane",
+    vis.draw_label(panel, "not detectable (blank)", (x + 26, y), (255, 255, 255), 0.5)
+    claimed = np.zeros(next(iter(cards.values()))["actual"].shape, dtype=bool)
+    for item in cards.values():
+        claimed |= item["actual"]
+    vis.draw_label(panel, f"{100 - 100.0 * int(claimed.sum()) / total:.2f}% of S-V plane",
                    (x + 26, y + 21), (165, 165, 165), 0.42)
 
 
 # ============================================================
 # 3. 文字统计
 # ============================================================
-def print_summary(h: int, masks: dict) -> None:
-    """打印该 H 下每个颜色能检测到的 S-V 门槛。"""
+def print_summary(h: int, cards: dict, show_actual: bool = True) -> None:
+    """打印该 H 下每种颜色的理论 / 实际可检测范围与生效阈值。"""
     total = (SAT_MAX + 1) * (VAL_MAX + 1)
     print(f"扫描切片    : H={h}，S 0~{SAT_MAX} × V 0~{VAL_MAX}，共 {total} 格")
-    print(f"参与判定    : {', '.join(masks)}")
+    print(f"参与判定    : {', '.join(cards)}")
     print()
-    print(f"{'颜色':<8}{'H 是否在该色区间':<18}{'阈值':<40}{'可检测格子':>10}{'占比':>9}")
-    print("-" * 87)
-    for name, hit in masks.items():
-        spec = get_color(name)
-        in_range = "是" if any(lo <= h <= hi for lo, hi in spec.ranges) else "否（必为 0）"
-        hits = int(np.count_nonzero(hit))
-        print(f"{name:<8}{in_range:<18}{spec.describe():<40}{hits:>10}{hits * 100.0 / total:>8.2f}%")
+    print(f"{'颜色':<8}{'理论(固定阈值)':>15}{'实际(加优化)':>14}{'削减':>9}"
+          f"   实际生效阈值")
+    print("-" * 96)
+    for name, item in cards.items():
+        theory = int(item["theory"].sum())
+        actual = int(item["actual"].sum())
+        used = f"S[{int(item['lower'][1])},{int(item['upper'][1])}]"
+        if len(item["color"].ranges) > 1:          # 红色这种多段色相不做细化
+            used = "同固定阈值"
+        print(f"{name:<8}{theory * 100.0 / total:>14.2f}%{actual * 100.0 / total:>13.2f}%"
+              f"{(actual - theory) * 100.0 / total:>8.2f}%   {used}")
 
-    covered = np.zeros(next(iter(masks.values())).shape, dtype=bool)
-    for hit in masks.values():
-        covered |= hit
-    covered = int(np.count_nonzero(covered))
-    print(f"{'合计':<8}{'(至少一种颜色能检测到)':<18}{'':<40}{covered:>10}"
-          f"{covered * 100.0 / total:>8.2f}%")
+    covered = np.zeros(next(iter(cards.values()))["actual"].shape, dtype=bool)
+    for item in cards.values():
+        covered |= item["actual"]
+    print(f"{'合计':<8}{'':>15}{int(covered.sum()) * 100.0 / total:>13.2f}%"
+          f"   (至少一种颜色能检测到)")
 
-    # 只要该 H 落在某个颜色的区间内，就能直接从阈值推出门槛
+    # 实际能检测到的 S / V 取值范围
     print()
-    for name, hit in masks.items():
-        spec = get_color(name)
+    for name, item in cards.items():
+        spec = item["color"]
         if not any(lo <= h <= hi for lo, hi in spec.ranges):
             continue
-        s_ok = int(hit.any(axis=0).sum())
-        v_ok = int(hit.any(axis=1).sum())
-        print(f"[{name}] H={h} 落在区间内：S ≥ {spec.s_min}（满足的 S 取值共 {s_ok} 个），"
-              f"V ≥ {spec.v_min}（满足的 V 取值共 {v_ok} 个）")
+        mask = item["actual"] if show_actual else item["theory"]
+        label = "实际" if show_actual else "理论"
+        s_ok = np.where(mask.any(axis=0))[0]
+        v_ok = np.where(mask.any(axis=1))[0]
+        if not len(s_ok):
+            print(f"[{name}] H={h} 在色相区间内，但{label}上一格都没有")
+            continue
+        print(f"[{name}] H={h}：理论 S ≥ {spec.s_min}、V ≥ {spec.v_min}；"
+              f"{label} S {int(s_ok.min())}~{int(s_ok.max())}、"
+              f"V {VAL_MAX - int(v_ok.max())}~{VAL_MAX - int(v_ok.min())}")
 
 
 # ============================================================
@@ -186,6 +237,10 @@ def parse_args(argv=None):
         description="指定色相 H，扫描 S-V 平面看哪些 (S,V) 能被检测到")
     parser.add_argument("--hue", type=int, default=28, metavar=f"0-{HUE_MAX}",
                         help=f"要扫描的色相 H（默认 28，黄色区），范围 {HUE_MIN}~{HUE_MAX}")
+    parser.add_argument("--no-optimize", action="store_true",
+                        help="只看固定阈值的理论范围（不加自适应细化与形态学）")
+    parser.add_argument("--compare", action="store_true",
+                        help="并排输出两张色卡：左=固定阈值，右=加优化后的实际范围")
     parser.add_argument("--save", "-s", default=None, metavar="DIR",
                         help="保存到该目录（文件名含 H 值）")
     parser.add_argument("--no-show", action="store_true", help="不弹窗，只打印统计 / 存图")
@@ -199,31 +254,51 @@ def main(argv=None) -> int:
         sys.exit(f"错误：--hue 必须在 {HUE_MIN}~{HUE_MAX} 之间（OpenCV 的 H 范围），"
                  f"收到 {args.hue}")
 
-    raw, masks = scan(args.hue)
-    print_summary(args.hue, masks)
+    raw, theory_masks = scan(args.hue)                  # 真实色域 + 固定阈值掩膜
+    optimized = scan_optimized(raw)                     # 完整流程（与 main.py 相同）
+    cards = {
+        name: {
+            "color": det["color"],
+            "theory": theory_masks[name],
+            "actual": det["mask"] > 0,
+            "lower": det["lower"],
+            "upper": det["upper"],
+        }
+        for name, det in optimized.items()
+    }
+    print_summary(args.hue, cards, show_actual=not args.no_optimize)
 
-    # 色卡：显示每个 (S, V) 的真实颜色，检测不到的格子留空
-    claimed = np.zeros(raw.shape[:2], dtype=bool)
-    for hit in masks.values():
-        claimed |= hit
-    detection = np.where(claimed[..., None], raw, BLANK_COLOR).astype(np.uint8)
+    def one_card(mask_key: str, title: str, subtitle: bool) -> np.ndarray:
+        """生成一张"色卡 + 图例"的面板。"""
+        panel = make_panel(build_card(raw, {n: c[mask_key] for n, c in cards.items()}), title)
+        wide = np.full((panel.shape[0], panel.shape[1] + LEGEND_W, 3), PANEL_BG, dtype=np.uint8)
+        wide[:, :panel.shape[1]] = panel
+        show = {n: {"actual": c[mask_key], "theory": c["theory"]} for n, c in cards.items()}
+        draw_legend(wide, panel.shape[1], TITLE_H, show, args.hue, optimized=subtitle)
+        for name in cards:
+            draw_boundaries(wide, name, AXIS_LEFT, TITLE_H)
+        return wide
 
-    panel = make_panel(detection, f"detectable colors at H={args.hue}")
-    wide = np.full((panel.shape[0], panel.shape[1] + LEGEND_W, 3), PANEL_BG, dtype=np.uint8)
-    wide[:, :panel.shape[1]] = panel
-    draw_legend(wide, panel.shape[1], TITLE_H, masks, args.hue)
-    for name in masks:
-        draw_boundaries(wide, name, AXIS_LEFT, TITLE_H)
+    title = f"detectable colors at H={args.hue}"
+    if args.compare:
+        left = one_card("theory", f"threshold only (H={args.hue})", subtitle=False)
+        right = one_card("actual", f"after optimize (H={args.hue})", subtitle=True)
+        sheet = vis.tile_images([left, right], gap=8, background=PANEL_BG)
+    elif args.no_optimize:
+        sheet = one_card("theory", title, subtitle=False)
+    else:
+        sheet = one_card("actual", title, subtitle=True)
 
     if args.save:
         os.makedirs(args.save, exist_ok=True)
-        out = os.path.join(args.save, f"sv_scan_h{args.hue}.png")
-        cv2.imwrite(out, wide)
+        suffix = "_compare" if args.compare else ("_theory" if args.no_optimize else "")
+        out = os.path.join(args.save, f"sv_scan_h{args.hue}{suffix}.png")
+        cv2.imwrite(out, sheet)
         print()
         print(f"扫描图已保存到: {out}")
 
     if not args.no_show:
-        cv2.imshow(f"S-V scan H={args.hue} - any key", vis.fit_for_display(wide, 1800))
+        cv2.imshow(f"S-V scan H={args.hue} - any key", vis.fit_for_display(sheet, 1800))
         print()
         print("已弹出扫描图窗口：先点一下窗口，再按任意键退出。")
         cv2.waitKey(0)
