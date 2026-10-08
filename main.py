@@ -13,7 +13,6 @@
     python main.py --color blue             # 改识别蓝色（一次只识别一种颜色）
     python main.py --no-show                # 只识别并打印统计，不弹窗（服务器 / 批处理用）
     python main.py --save out/              # 把 mask / 结果 / 对比图保存到 out/
-    python main.py --image assets/yuanshen.png
     python main.py --no-blur                # 消融：关闭中值滤波去噪
     python main.py --no-adaptive            # 消融：关闭自适应阈值细化（只用固定阈值）
     python main.py --no-morph               # 消融：关闭形态学开/闭运算
