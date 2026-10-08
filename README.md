@@ -12,10 +12,9 @@ color_specs.py       颜色定义与 HSV 阈值注册表（想加颜色改这里
 mask_postprocess.py  二值化、自适应阈值细化、形态学去噪、连通域与轮廓
 color_detection.py   识别主流程：掩膜 + 区域列表 + 统计信息
 visualization.py     画轮廓标注、彩色掩膜、横向对比拼图
-tuning_app.py        可选的滑块微调窗口（按 s 保存阈值）
 sv_scan.py           指定 H，扫描 S×V 平面看哪些 (S,V) 能检测到
+example/             老师提供的基础示例代码（固定蓝色阈值，无预处理与后处理）
 assets/              测试图片
-materials/           实验课 Assignment
 ```
 
 数据流：`image_io` 读图 → `color_detection` 调 `mask_postprocess` 做二值化与去噪
@@ -81,42 +80,16 @@ IMG_PATH = "assets/cap.jpg"   # 后缀写错也能找到 assets/cap.png
 | 命令 | 作用 |
 | --- | --- |
 | `python main.py` | 从图片识别默认颜色，弹出 4 联拼接图（原分辨率，按任意键关闭） |
-| `python main.py --camera` | **改用 0 号摄像头实时识别**（`q`/`ESC` 退出，`s` 存当前帧） |
-| `python main.py --camera 1` | 用 1 号摄像头 |
-| `python main.py --camera --save out/` | 摄像头模式下按 `s` 把帧和结果存到 `out/` |
 | `python main.py --color blue` | 改识别蓝色（覆盖 `DEFAULT_COLOR`） |
 | `python main.py -i assets/yuanshen.png` | 指定图片（默认取 `.env` 的 `IMG_PATH`） |
 | `python main.py --no-show` | 不弹窗，只打印统计（无图形界面环境） |
 | `python main.py --save out/` | 保存 mask / 结果 / 对比图到 `out/` |
-| `python main.py --largest` | 只保留最大色块（识别单个目标时更干净） |
+| `python main.py --no-blur` | 关闭中值滤波去噪（消融实验用） |
 | `python main.py --no-adaptive` | 关闭自适应细化，严格只用固定阈值 |
-| `python main.py --mode tune -c yellow` | 滑块微调阈值，按 `s` 保存 JSON、`q` 退出（仅图片模式） |
+| `python main.py --no-morph` | 关闭形态学开 / 闭运算，不去噪也不补洞（消融实验用） |
 
 > **一次只识别一种颜色**：`--color` 接受单个颜色名（`blue` / `yellow` / `green` / `red`），
 > 不支持逗号分隔或 `all`。想换颜色再跑一次即可。
-
-### 摄像头模式（`--camera [N]`）
-
-**不写 `--camera` 时行为与以前完全一致**（从图片读取）；加了它则输入源换成摄像头，
-检测流程（阈值、形态学、区域统计）**一行代码都没变**，只是把"一张图"换成"每一帧"。
-
-```powershell
-python main.py --camera                       # 0 号摄像头，识别 .env 的 DEFAULT_COLOR
-python main.py --camera 1 --color blue        # 1 号摄像头，识别蓝色
-python main.py --camera --no-show             # 无窗口：每 30 帧打印一次统计，Ctrl+C 结束
-python main.py --camera --save out/           # 按 s 时把帧和识别结果存到 out/
-```
-
-| 按键 | 作用 |
-| --- | --- |
-| `q` / `ESC` | 退出 |
-| `s` | 保存当前帧：`camera_frame00003.png` + `camera_frame00003_detected.png` |
-| `Ctrl+C` | 也能正常结束（会释放摄像头） |
-
-其他说明：采集分辨率请求 640×480（摄像头不支持时自动忽略）；打开后丢弃 5 帧预热，
-等自动曝光稳定；打不开摄像头会提示检查占用或换设备号；`--camera` 与 `--mode tune`
-不能同时用（微调需要一张静态图片）。
-
 
 ## 查看"当前能识别哪些颜色"
 
@@ -156,16 +129,6 @@ python sv_scan.py --hue 28 --no-show        # 只打印统计 / 存图，不弹�
   不做细化，只剩形态学带来的 0.17% 微增
 - 形态学在平滑的 S-V 平面上影响很小（几个像素的边界效应），主要作用在真实照片上
 
-```bash
-python sv_scan.py --hue 28              # H=28（黄色区）
-python sv_scan.py --hue 110             # H=110（蓝色区）
-python sv_scan.py --hue 0               # H=0（红色，验证跨 0 环绕）
-python sv_scan.py --hue 85              # 边界 H=85：绿的上限 = 蓝的下限，两者同时命中
-python sv_scan.py --hue 37              # 空隙 H，整张全黑（谁都检测不到）
-python sv_scan.py --hue 28 --save out/  # 存 out/sv_scan_h28.png
-python sv_scan.py --hue 28 --no-show    # 只打印统计 / 存图，不弹窗
-```
-
 ## 各颜色的固定阈值
 
 HSV 取值范围：H ∈ [0, 179]，S ∈ [0, 255]，V ∈ [0, 255]。
@@ -193,11 +156,3 @@ V 下限用于甩掉过暗像素。识别时还会用粗筛结果的 H/S 中位�
 ),
 ```
 
-## 已知样例结果（assets/flowers.png）
-
-| 颜色 | 区域数 | 像素占比 |
-| --- | --- | --- |
-| yellow | 6 | 7.57% |
-| blue | 5 | 6.06% |
-| red | 5 | 7.45% |
-| green | 0 | 0.03% |
