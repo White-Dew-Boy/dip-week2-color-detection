@@ -92,7 +92,6 @@ def clean_mask(
     mask: np.ndarray,
     morph_ksize: int = MORPH_KSIZE,
     fill_holes: bool = True,
-    keep_largest_only: bool = False,
 ) -> np.ndarray:
     """形态学后处理：开运算去掉零散噪点，闭运算填补色块内部空洞。"""
     cleaned = mask
@@ -102,18 +101,7 @@ def clean_mask(
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel, iterations=1)
         if fill_holes:
             cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=2)
-    if keep_largest_only:
-        cleaned = keep_largest_component(cleaned)
     return cleaned
-
-
-def keep_largest_component(mask: np.ndarray) -> np.ndarray:
-    """只保留面积最大的连通区域（识别单一目标时更干净）。"""
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    if count <= 1:
-        return mask
-    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    return np.where(labels == largest, 255, 0).astype(np.uint8)
 
 
 def find_regions(mask: np.ndarray, min_area: int = MIN_AREA) -> list[dict]:

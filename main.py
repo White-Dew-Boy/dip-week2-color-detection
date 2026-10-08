@@ -6,25 +6,26 @@
     mask_postprocess.py 二值化、阈值细化、形态学去噪、连通域
     color_detection.py  识别主流程（掩膜 + 区域 + 统计）
     visualization.py    画轮廓、彩色掩膜、对比拼图
-    tuning_app.py       可选的滑块微调窗口
     main.py             本文件：命令行参数、打印统计、保存 / 显示结果
 
 用法：
     python main.py                          # 无参数启动：从图片识别默认颜色并显示结果
-    python main.py --camera                 # 改用 0 号摄像头实时识别（按 q / ESC 退出）
-    python main.py --camera 1                # 用 1 号摄像头
-    python main.py --camera --save out/     # 摄像头模式下按 s 把当前帧存到 out/
     python main.py --color blue             # 改识别蓝色（一次只识别一种颜色）
     python main.py --no-show                # 只识别并打印统计，不弹窗（服务器 / 批处理用）
     python main.py --save out/              # 把 mask / 结果 / 对比图保存到 out/
     python main.py --image assets/yuanshen.png
-    python main.py --largest                # 只保留最大色块（识别单个目标时更干净）
-    python main.py --mode tune --color yellow   # 微调阈值，按 s 保存（仅图片模式）
+    python main.py --no-blur                # 消融：关闭中值滤波去噪
+    python main.py --no-adaptive            # 消融：关闭自适应阈值细化（只用固定阈值）
+    python main.py --no-morph               # 消融：关闭形态学开/闭运算
+    python main.py --no-blur --no-adaptive --no-morph   # 三者全关 = 纯固定阈值基线
 
-图片模式：只弹出一张 4 联拼接图（original | mask | masked | detected），
-          **按原始分辨率显示**，按任意键关闭。
-摄像头模式：输入源换成摄像头，识别流程与图片模式完全相同；
-          窗口按 q / ESC 退出，按 s 把当前帧和识别结果存图，Ctrl+C 也能结束。
+只弹出一张 4 联拼接图（original | mask | masked | detected），
+**按原始分辨率显示**，按任意键关闭。
+
+三个消融开关 --no-blur / --no-adaptive / --no-morph 分别关闭中值滤波去噪、自适应阈值
+细化与形态学后处理，任意组合可复现 2^3 = 8 种配置（全关即"只用固定阈值"的基线）。
+它们只提供"关闭"方向：对红色这类跨 H=0、区间分两段的颜色，强制开启细化会把两段压成
+一段，ColorSpec.adaptive_allowed 正是为此设置的保护，命令行不应绕过。
 
 可在 .env 或系统环境变量里配置的设置项（系统环境变量优先）：
     IMG_PATH             默认读哪张图
@@ -45,9 +46,9 @@ import cv2
 from dotenv import load_dotenv
 import visualization as vis
 from color_detection import detect_color
-from color_specs import COLORS, SUPPORTED_COLORS, resolve_color
+from color_specs import SUPPORTED_COLORS, resolve_color
 from image_io import get_image_path, load_image
-from tuning_app import run_tuner
+from mask_postprocess import MEDIAN_BLUR_KSIZE, MORPH_KSIZE
 
 # ============================================================
 # 可通过环境变量配置的设置项（写在 .env 或直接设为系统环境变量；
@@ -56,13 +57,6 @@ from tuning_app import run_tuner
 ENV_DEFAULT_COLOR = "DEFAULT_COLOR"                # 默认识别的颜色（yellow）
 ENV_MAX_LISTED_REGIONS = "MAX_LISTED_REGIONS"      # 统计里最多列出几个区域（5）
 ENV_DISPLAY_MAX_WIDTH = "DISPLAY_MAX_WIDTH"        # 显示时窗口最大宽度 px（1600）
-
-# 摄像头模式（--camera）的固定设置
-CAMERA_FRAME_WIDTH = 640        # 请求的采集宽度（摄像头不支持时自动忽略）
-CAMERA_FRAME_HEIGHT = 480       # 请求的采集高度（摄像头不支持时自动忽略）
-CAMERA_OUTPUT_EVERY = 30        # 无窗口模式（--no-show）下每隔多少帧打印一次统计
-CAMERA_PRINT_INTERVAL = 60      # 有窗口时每隔多少帧打印一次运行状态
-CAMERA_WARMUP_FRAMES = 5        # 打开后先丢弃几帧，等自动曝光稳定
 
 
 def env_int(name: str, default: int) -> int:
@@ -79,6 +73,36 @@ def env_int(name: str, default: int) -> int:
 def env_str(name: str, default: str) -> str:
     """读字符串环境变量；未设置时用默认值。"""
     return os.getenv(name, "").strip() or default
+
+
+# ============================================================
+# 三个待考察模块的开关（逐因子消融实验用）
+# ------------------------------------------------------------
+# 中值滤波、自适应阈值细化、形态学后处理可各自单独关闭，关闭方式分别是：
+#     中值滤波    blur_ksize=1    —— to_hsv()     直接跳过 medianBlur
+#     自适应细化  adaptive=False  —— detect_color() 不再调用 refine_bounds()
+#     形态学      morph_ksize=1   —— clean_mask()  跳过开/闭运算（含补洞）
+# 三个开关相互独立，组合起来正好是 2^3 = 8 种配置，覆盖"基线 -> 完整流程"的每一步。
+# 这里只提供"关闭"开关，不提供"强制开启"：自适应细化对色相跨度大的颜色（如红色
+# 跨 H=0、区间分两段）开启后会把两段压成一段，ColorSpec.adaptive_allowed 正是为
+# 此设置的保护，命令行不应绕过它。
+# ============================================================
+def factor_switches(args) -> dict:
+    """把三个命令行开关翻译成 detect_color() 的关键字参数。"""
+    return {
+        "adaptive": False if args.no_adaptive else None,
+        "blur_ksize": 1 if args.no_blur else MEDIAN_BLUR_KSIZE,
+        "morph_ksize": 1 if args.no_morph else MORPH_KSIZE,
+    }
+
+
+def describe_modules(args) -> str:
+    """一行说明本次启用了哪些模块，让消融实验的日志能自证配置。"""
+    return "中值滤波={} 自适应细化={} 形态学={}".format(
+        "关" if args.no_blur else "开",
+        "关" if args.no_adaptive else "自动",
+        "关" if args.no_morph else "开")
+
 
 
 # ============================================================
@@ -135,10 +159,16 @@ def show_visuals(visuals: dict, max_width: int | None) -> None:
 # ============================================================
 # 统计信息打印
 # ============================================================
-def print_report(image_path: str, det: dict, max_regions: int) -> None:
-    """打印一种颜色的识别统计，方便不同方法 / 不同图片之间对比。"""
+def print_report(image_path: str, det: dict, max_regions: int, modules: str = "") -> None:
+    """打印一种颜色的识别统计，方便不同方法 / 不同图片之间对比。
+
+    modules 是本次启用的模块说明（见 describe_modules），打印出来是为了让
+    消融实验的日志能自证配置，便于事后核对每一组结果对应哪三个开关。
+    """
     spec, stats = det["color"], det["stats"]
     print(f"颜色        : {spec.name} ({spec.label})")
+    if modules:
+        print(f"启用模块    : {modules}")
     print(f"识别阈值    : {spec.describe()}")
 
     # 自适应细化只动 H/S 区间（多段色相如红色不细化），变了才多打一行
@@ -158,90 +188,6 @@ def print_report(image_path: str, det: dict, max_regions: int) -> None:
         print(f"  ... 其余 {stats['region_count'] - max_regions} 个区域从略")
 
 
-def print_frame_stats(frame_index: int, det: dict) -> None:
-    """摄像头模式下的单行统计（每帧都刷屏没法看，所以只印关键信息）。"""
-    stats = det["stats"]
-    print(f"第 {frame_index:5d} 帧  {det['color'].name}: "
-          f"{stats['region_count']}区/{stats['ratio'] * 100:.1f}%")
-
-
-def run_camera(camera_index: int, color_name: str, args, max_regions: int,
-               max_width: int) -> int:
-    """摄像头实时识别：逐帧调用与图片模式完全相同的 detect_color()。
-
-    检测逻辑（阈值、形态学、区域统计）全部复用现有模块，本函数只负责
-    开摄像头、逐帧送进去、显示/保存、以及按键退出。
-    """
-    capture = cv2.VideoCapture(camera_index)
-    if not capture.isOpened():
-        capture.release()
-        print(f"错误：打不开摄像头 {camera_index}。请检查是否被其它程序占用，"
-              f"或用 --camera 1 换一个设备号。")
-        return 1
-
-    capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
-    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
-    for _ in range(CAMERA_WARMUP_FRAMES):        # 丢掉预热帧，等自动曝光稳定
-        capture.read()
-
-    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"摄像头 {camera_index} 已打开：{width}x{height}，识别颜色 {color_name}")
-    if args.no_show:
-        print(f"无窗口模式：每 {CAMERA_OUTPUT_EVERY} 帧打印一次统计，按 Ctrl+C 结束。")
-    else:
-        print("窗口中按 q / ESC 退出；按 s 保存当前帧的识别结果。")
-
-    hint = " (q/ESC quit, s save)"
-    frame_index = 0
-    try:
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                print("错误：读取摄像头画面失败，已停止。")
-                break
-            frame_index += 1
-
-            det = detect_color(
-                frame, color_name,
-                adaptive=False if args.no_adaptive else None,
-                keep_largest_only=args.largest,
-            )
-            overlay = vis.draw_regions(frame, det["regions"],
-                                       bgr=det["color"].bgr, prefix=f"{color_name} ")
-
-            if args.no_show:
-                if frame_index % CAMERA_OUTPUT_EVERY == 0:
-                    print_frame_stats(frame_index, det)
-            else:
-                cv2.imshow(f"camera{hint}", vis.fit_for_display(frame, max_width))
-                cv2.imshow(f"detected{hint}", vis.fit_for_display(overlay, max_width))
-                cv2.imshow(f"mask{hint}", vis.fit_for_display(det["mask"], max_width))
-
-                key = cv2.waitKey(1) & 0xFF
-                if key in (27, ord("q")):
-                    break
-                if key == ord("s"):
-                    save_dir = args.save or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                         "out")
-                    os.makedirs(save_dir, exist_ok=True)
-                    stem = os.path.join(save_dir, f"camera_frame{frame_index:05d}")
-                    cv2.imwrite(f"{stem}.png", frame)
-                    cv2.imwrite(f"{stem}_detected.png", overlay)
-                    print(f"已保存当前帧: {stem}.png / {stem}_detected.png")
-
-                if frame_index % CAMERA_PRINT_INTERVAL == 0:
-                    print_frame_stats(frame_index, det)
-    except KeyboardInterrupt:
-        print()                                  # Ctrl+C 正常退出
-    finally:
-        capture.release()
-        cv2.destroyAllWindows()
-
-    print(f"摄像头已关闭，共处理 {frame_index} 帧。")
-    return 0
-
-
 # ============================================================
 # 命令行
 # ============================================================
@@ -250,25 +196,22 @@ def parse_args(argv=None, default_color: str = "yellow"):
         description=f"固定颜色识别（HSV 阈值 + 形态学去噪）；"
                     f"无参数启动时识别 {default_color} 并显示结果图片")
     parser.add_argument("--image", "-i", default=None,
-                        help="待处理图片路径（默认取 .env 的 IMG_PATH）；不给 --camera 时用它")
+                        help="待处理图片路径（默认取 .env 的 IMG_PATH）")
     parser.add_argument("--color", "-c", default=None,
                         help=f"要识别的颜色：{', '.join(SUPPORTED_COLORS)}"
                              f"（默认 {default_color}，由环境变量 {ENV_DEFAULT_COLOR} 决定）")
-    parser.add_argument("--camera", type=int, nargs="?", const=0, default=None, metavar="N",
-                        help="从摄像头实时读取画面（不写这个参数就从图片读取）。"
-                             "只写 --camera 用 0 号摄像头，--camera 1 用 1 号")
-    parser.add_argument("--mode", "-m", choices=["fixed", "tune"], default="fixed",
-                        help="fixed=固定阈值识别（默认）；tune=滑块微调模式（仅图片模式）")
     parser.add_argument("--save", "-s", default=None, metavar="DIR",
                         help="把 mask / 结果 / 对比图保存到该目录；可与 --no-show 一起用于批处理")
     parser.add_argument("--no-show", action="store_true",
                         help="不弹窗，只识别并打印统计（无图形界面环境用）")
-    parser.add_argument("--largest", action="store_true",
-                        help="只保留最大色块（识别单个目标时更干净）")
+    # 三个"关闭型"开关：分别对应中值滤波、自适应阈值细化、形态学后处理，
+    # 任意组合即可复现逐因子消融的 8 种配置
+    parser.add_argument("--no-blur", action="store_true",
+                        help="关闭中值滤波去噪（直接用原始 HSV 分割），消融实验用")
     parser.add_argument("--no-adaptive", action="store_true",
                         help="关闭自适应阈值细化，严格只用固定阈值")
-    parser.add_argument("--save-bounds", default=None, metavar="FILE",
-                        help="tune 模式下按 s 保存阈值 JSON 的文件名")
+    parser.add_argument("--no-morph", action="store_true",
+                        help="关闭形态学开/闭运算（不去噪也不补洞），消融实验用")
     return parser.parse_args(argv)
 
 
@@ -285,18 +228,6 @@ def main(argv=None) -> int:
     max_regions = env_int(ENV_MAX_LISTED_REGIONS, 5)
     # 拼接图默认按原始分辨率显示（画质不变）；DISPLAY_MAX_WIDTH 设为正数才限制宽度
     compare_max_width = env_int(ENV_DISPLAY_MAX_WIDTH, 0)
-    # 摄像头每帧都缩放，成本较高，仍用固定上限
-    max_width = env_int(ENV_DISPLAY_MAX_WIDTH, 1600) or 1600
-
-    # ---------- 摄像头模式：给了 --camera 就走这里 ----------
-    if args.camera is not None:
-        if args.mode == "tune":
-            sys.exit("错误：微调模式需要一张静态图片（用于拖动滑块），"
-                     "请不要和 --camera 一起使用。")
-        if args.image:
-            print(f"提示：同时给了 --image 和 --camera，本次以摄像头 {args.camera} 为准。")
-        return run_camera(args.camera, color_name, args, max_regions, max_width)
-
     # ---------- 图片模式（默认）----------
     try:
         image_path = get_image_path(args.image)
@@ -307,21 +238,10 @@ def main(argv=None) -> int:
     if image is None:
         sys.exit(f"错误：无法读取图像，请检查路径是否正确 -> {image_path}")
 
-    if args.mode == "tune":
-        spec = COLORS[color_name]
-        save_path = args.save_bounds or os.path.join(os.path.dirname(image_path), f"{spec.name}_bounds.json")
-        if not os.path.isabs(save_path):
-            save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), save_path)
-        run_tuner(image, spec, save_path)
-        return 0
+    det = detect_color(image, color_name, **factor_switches(args))
 
-    det = detect_color(
-        image, color_name,
-        adaptive=False if args.no_adaptive else None,
-        keep_largest_only=args.largest,
-    )
-
-    print_report(image_path, det, max_regions=max_regions)
+    print_report(image_path, det, max_regions=max_regions,
+                 modules=describe_modules(args))
 
     visuals = build_visuals(image, det)
     if args.save:

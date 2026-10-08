@@ -30,7 +30,6 @@ def detect_color(
     morph_ksize: int = MORPH_KSIZE,
     min_area: int = MIN_AREA,
     fill_holes: bool = True,
-    keep_largest_only: bool = False,
 ) -> dict:
     """识别一种颜色。
 
@@ -60,7 +59,7 @@ def detect_color(
     else:
         mask = coarse
 
-    mask = clean_mask(mask, morph_ksize, fill_holes, keep_largest_only)
+    mask = clean_mask(mask, morph_ksize, fill_holes)
     regions = find_regions(mask, min_area)
     result = cv2.bitwise_and(image, image, mask=mask)
 
